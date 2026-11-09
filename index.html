@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <title>Smart Grid & EV Load Balancer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220; --panel: #121d30; --panel2: #17243a;
+      --line: #263750; --text: #e8f0fb; --muted: #91a4bd;
+      --cyan: #42d5f5; --green: #48df9a; --amber: #ffc66d; --red: #ff7885;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 26px; font-family: Inter, Segoe UI, Arial, sans-serif;
+      background: radial-gradient(circle at top right, #16304a 0, var(--bg) 42%);
+      color: var(--text);
+    }
+    .wrap { max-width: 1180px; margin: auto; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:26px; }
+    h1 { margin:0; font-size:clamp(24px,4vw,34px); letter-spacing:-.5px; }
+    .subtitle { color:var(--muted); margin:8px 0 0; }
+    .pill { display:inline-flex; align-items:center; gap:9px; border:1px solid var(--line); background:#101b2d; padding:10px 14px; border-radius:999px; color:var(--muted); font-size:13px; }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--amber); box-shadow:0 0 12px currentColor; }
+    .dot.online { background:var(--green); } .dot.offline { background:var(--red); }
+    .section-title { font-size:17px; margin:26px 0 13px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(205px,1fr)); gap:14px; }
+    .card { background:linear-gradient(145deg,var(--panel2),var(--panel)); border:1px solid var(--line); border-radius:16px; padding:19px; box-shadow:0 12px 28px #0002; }
+    .label { color:var(--muted); font-size:13px; }
+    .value { font-size:clamp(25px,4vw,32px); font-weight:700; margin:12px 0 4px; letter-spacing:-.6px; }
+    .unit { color:var(--muted); font-size:13px; }
+    .accent { color:var(--cyan); } .green { color:var(--green); }
+    .capacity-head { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:13px; margin-top:15px; }
+    .bar { height:10px; border-radius:99px; background:#263750; overflow:hidden; margin-top:9px; }
+    .fill { height:100%; width:0; border-radius:99px; background:linear-gradient(90deg,#2ebbdc,#48df9a); transition:width .35s ease; }
+    .charger { position:relative; overflow:hidden; }
+    .charger h3 { margin:0 0 13px; font-size:16px; }
+    .charger-top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    .status { font-size:12px; padding:5px 9px; border-radius:999px; background:#173b32; color:var(--green); }
+    .status.waiting { background:#42331c; color:var(--amber); }
+    .charger-values { display:flex; justify-content:space-between; gap:12px; margin-top:14px; color:var(--muted); font-size:13px; }
+    .charger-values strong { display:block; color:var(--text); font-size:19px; margin-top:5px; }
+    .footer { color:var(--muted); font-size:12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; margin:20px 2px 0; }
+    .notice { margin-top:18px; color:var(--muted); font-size:13px; line-height:1.55; }
+    @media (max-width:600px) { body { padding:17px; } header { align-items:flex-start; } .pill { width:100%; justify-content:center; } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>⚡ Smart Grid &amp; EV Load Balancer</h1>
+      <p class="subtitle">IoT energy monitoring · Intelligent EV charging allocation</p>
+    </div>
+    <div class="pill"><span id="statusDot" class="dot"></span><span id="connection">Connecting to Flask server…</span></div>
+  </header>
+
+  <h2 class="section-title">Grid overview</h2>
+  <section class="grid">
+    <article class="card"><div class="label">Grid voltage</div><div class="value accent" id="voltage">—</div><div class="unit">Volts (V)</div></article>
+    <article class="card"><div class="label">Grid current</div><div class="value accent" id="current">—</div><div class="unit">Amperes (A)</div></article>
+    <article class="card"><div class="label">Measured grid power</div><div class="value accent" id="power">—</div><div class="unit">Watts (W)</div></article>
+    <article class="card">
+      <div class="label">Capacity remaining after allocations</div>
+      <div class="value green" id="available">—</div><div class="unit">Watts (W)</div>
+      <div class="capacity-head"><span>Grid capacity used</span><strong id="usedPercent">—</strong></div>
+      <div class="bar"><div class="fill" id="capacityBar"></div></div>
+    </article>
+  </section>
+
+  <h2 class="section-title">EV charging management</h2>
+  <section class="grid" id="chargers">
+    <article class="card"><div class="label">Waiting for charger data…</div></article>
+  </section>
+
+  <p class="notice">The dashboard refreshes automatically every 2 seconds. Values remain at zero until the ESP32 sends valid voltage and current readings to <code>/api/telemetry</code>.</p>
+  <footer class="footer"><span>Last sensor update: <strong id="updated">Waiting for ESP32</strong></span><span>API: <code>/api/state</code></span></footer>
+</div>
+
+<script>
+  const byId = (id) => document.getElementById(id);
+  const number = (value, digits = 2) => Number(value ?? 0).toFixed(digits);
+  function setConnection(online, message) {
+    byId("connection").textContent = message;
+    byId("statusDot").className = "dot " + (online ? "online" : "offline");
+  }
+  function renderChargers(chargers) {
+    if (!Array.isArray(chargers) || chargers.length === 0) {
+      byId("chargers").innerHTML = '<article class="card">No charger data received.</article>';
+      return;
+    }
+    byId("chargers").innerHTML = chargers.map((charger) => {
+      const requested = Math.max(0, Number(charger.requested) || 0);
+      const allocated = Math.max(0, Number(charger.allocated) || 0);
+      const percent = requested > 0 ? Math.min(100, allocated / requested * 100) : 0;
+      const waiting = allocated <= 0;
+      return `
+        <article class="card charger">
+          <div class="charger-top">
+            <h3>${escapeHtml(charger.name || ("EV Charger " + charger.id))}</h3>
+            <span class="status ${waiting ? "waiting" : ""}">${escapeHtml(charger.status || (waiting ? "Waiting" : "Charging"))}</span>
+          </div>
+          <div class="charger-values">
+            <div>Requested<strong>${number(requested, 1)} W</strong></div>
+            <div>Allocated<strong>${number(allocated, 1)} W</strong></div>
+          </div>
+          <div class="capacity-head"><span>Allocation progress</span><strong>${number(percent, 0)}%</strong></div>
+          <div class="bar"><div class="fill" style="width:${percent}%"></div></div>
+        </article>`;
+    }).join("");
+  }
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (char) => ({
+      "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+    }[char]));
+  }
+  async function updateDashboard() {
+    try {
+      const response = await fetch("/api/state", { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      const t = data.telemetry || {};
+      const capacity = Math.max(0, Number(data.grid_capacity) || 0);
+      const gridPower = Math.max(0, Number(t.power) || 0);
+      const allocated = Math.max(0, Number(data.total_allocated) || 0);
+      const used = capacity > 0 ? Math.min(100, (gridPower + allocated) / capacity * 100) : 0;
+
+      byId("voltage").textContent = number(t.voltage) + " V";
+      byId("current").textContent = number(t.current, 3) + " A";
+      byId("power").textContent = number(t.power) + " W";
+      byId("available").textContent = number(data.available_capacity) + " W";
+      byId("usedPercent").textContent = number(used, 0) + "%";
+      byId("capacityBar").style.width = used + "%";
+      byId("updated").textContent = t.updated || "Waiting for ESP32";
+      renderChargers(data.chargers);
+      setConnection(true, "Dashboard connected");
+    } catch (error) {
+      setConnection(false, "Server connection unavailable");
+    }
+  }
+  updateDashboard();
+  setInterval(updateDashboard, 2000);
+</script>
+</body>
+</html>
